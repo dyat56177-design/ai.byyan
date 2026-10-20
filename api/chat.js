@@ -27,8 +27,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    const response = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+    const upstream = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse",
       {
         method: "POST",
         headers: {
@@ -37,43 +37,66 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           contents: [{
-            parts: [{
-              text: message.trim()
-            }]
+            parts: [{ text: message.trim() }]
           }],
           generationConfig: {
-            maxOutputTokens: 500
+            maxOutputTokens: 250,
+            temperature: 0.7
           }
         })
       }
     );
 
-    const data = await response.json();
+    if (!upstream.ok) {
+      const detail = await upstream.text();
+      console.error("Gemini error:", upstream.status, detail);
 
-    if (!response.ok) {
-  const detail =
-    data.error?.message || "Tidak ada detail dari Google.";
-
-  console.error("Gemini API error:", response.status, detail);
-
-  return res.status(502).json({
-    error: detail,
-    googleStatus: response.status
-  });
+      return res.status(502).json({
+        error: "Gemini gagal memproses permintaan.",
+        googleStatus: upstream.status
+      });
     }
 
-    const reply = data.candidates?.[0]?.content?.parts
-      ?.map(part => part.text || "")
-      .join("");
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("X-Accel-Buffering", "no");
 
-    return res.status(200).json({
-      reply: reply || "Gemini tidak memberikan jawaban teks."
-    });
-  } catch (error) {
-    console.error("Gemini connection error:", error.message);
+    if (!upstream.body) {
+      return res.end();
+    }
 
-    return res.status(502).json({
-      error: "Tidak bisa terhubung ke Gemini."
-    });
-  }
+    const reader = upstream.body.getReader();
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) break;
+
+        if (res.destroyed) {
+          await reader.cancel();
+          return;
+        }
+
+        if (!res.write(value)) {
+          await new Promise(resolve => res.once("drain", resolve));
+        }
       }
+    } finally {
+      reader.releaseLock();
+    }
+
+    return res.end();
+  } catch (error) {
+    console.error("Streaming error:", error.message);
+
+    if (!res.headersSent) {
+      return res.status(502).json({
+        error: "Koneksi ke Gemini gagal."
+      });
+    }
+
+    return res.end();
+  }
+}
