@@ -73,46 +73,111 @@
     <div id="answer"></div>
   </main>
 
-  <script>
-    const message = document.getElementById("message");
-    const button = document.getElementById("send");
-    const status = document.getElementById("status");
-    const answer = document.getElementById("answer");
 
-    button.addEventListener("click", async () => {
-      const question = message.value.trim();
+<script>
+  const message = document.getElementById("message");
+  const button = document.getElementById("send");
+  const status = document.getElementById("status");
+  const answer = document.getElementById("answer");
 
-      if (!question) {
-        status.textContent = "Tulis pertanyaan dulu ya!";
-        return;
+  button.addEventListener("click", async () => {
+    const question = message.value.trim();
+
+    if (!question) {
+      status.textContent = "Tulis pertanyaan dulu ya!";
+      return;
+    }
+
+    button.disabled = true;
+    status.textContent = "Gemini sedang menjawab...";
+    answer.textContent = "";
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ message: question })
+      });
+
+      if (!response.ok) {
+        let detail = "Permintaan gagal.";
+
+        try {
+          const data = await response.json();
+          detail = data.error || detail;
+          if (data.googleStatus) {
+            detail += " (Google: " + data.googleStatus + ")";
+          }
+        } catch {}
+
+        throw new Error(detail);
       }
 
-      button.disabled = true;
-      status.textContent = "Gemini sedang berpikir...";
-      answer.textContent = "";
+      if (!response.body) {
+        throw new Error("Streaming tidak didukung.");
+      }
 
-      try {
-        const response = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: question })
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let gotText = false;
+
+      while (true) {
+        const { value, done } = await reader.read();
+
+        buffer += decoder.decode(value || new Uint8Array(), {
+          stream: !done
         });
 
-        const data = await response.json();
+        const events = buffer.split(/\r?\n\r?\n/);
+        buffer = events.pop() || "";
 
-        if (!response.ok) {
-          throw new Error(data.error || "Permintaan gagal.");
+        for (const event of events) {
+          const line = event
+            .split(/\r?\n/)
+            .find(line => line.startsWith("data:"));
+
+          if (!line) continue;
+
+          const raw = line.slice(5).trim();
+          if (!raw || raw === "[DONE]") continue;
+
+          try {
+            const chunk = JSON.parse(raw);
+            const parts =
+              chunk.candidates?.[0]?.content?.parts || [];
+
+            for (const part of parts) {
+              if (typeof part.text === "string") {
+                answer.textContent += part.text;
+                gotText = true;
+              }
+            }
+
+            if (gotText) {
+              status.textContent = "Gemini sedang mengetik... ✨";
+            }
+          } catch {
+            // Abaikan event yang bukan JSON lengkap.
+          }
         }
 
-        answer.textContent = data.reply;
-        status.textContent = "Berhasil terhubung! ✅";
-      } catch (error) {
-        status.textContent = "Gagal: " + error.message;
-      } finally {
-        button.disabled = false;
+        if (done) break;
       }
-    });
-  </script>
+
+      status.textContent = gotText
+        ? "Selesai! ✅"
+        : "Gemini tidak mengirim jawaban teks.";
+
+    } catch (error) {
+      status.textContent = "Gagal: " + error.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
+</script>
 </body>
 </html>
 
