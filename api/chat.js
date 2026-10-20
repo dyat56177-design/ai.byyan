@@ -51,10 +51,15 @@ export default async function handler(req, res) {
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("Gemini request failed:", response.status);
-      return res.status(502).json({
-        error: "Gemini gagal memproses permintaan."
-      });
+  const detail =
+    data.error?.message || "Tidak ada detail dari Google.";
+
+  console.error("Gemini API error:", response.status, detail);
+
+  return res.status(502).json({
+    error: detail,
+    googleStatus: response.status
+  });
     }
 
     const reply = data.candidates?.[0]?.content?.parts
